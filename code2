@@ -1,0 +1,272 @@
+---
+title: "Should Citi Bike Expand to Low-income Neighborhoods?"
+author: "Marlene Jackson and Olivia Handoko"
+output: 
+  html_document:
+    theme: lumen 
+    code_folding: hide
+---
+<style>
+.html-widget {
+    margin: auto;
+}
+</style>
+![](https://static.politico.com/dims4/default/f2fc4ae/2147483647/resize/1160x%3E/quality/90/?url=https%3A%2F%2Fstatic.politico.com%2Ff3%2Fc6%2F3d1e784344efba0213be8b480b2f%2F170517-citi-bike-gty.jpg)
+
+```{r  message=FALSE, warning=FALSE, echo=FALSE}
+library(tidyverse)
+library(RMySQL)
+library(tigris)
+library(dplyr)
+library(rgdal)
+library(rgeos)
+library(leaflet)
+library(ggplot2)
+library(dplyr)
+library('ggmap')
+library(ggpubr)
+db <- dbConnect(MySQL(),
+                host = "scidb.smith.edu", 
+                user = "mth292", 
+                password = "RememberPi",
+                dbname = "citibike")
+knitr::opts_chunk$set(connection = db, max.print = 20)
+```
+[Github Repository: https://github.com/oliviahandoko/MP4.git]
+```{r message=FALSE, warning=FALSE}
+#in a span of a year '
+#there are only two tables in this; not sure how we can get the point for joining multipl tables in SQL
+#Also these columns are relevant now to create multiple dataframes later for the grpahs that we plan on using 
+data_citibike <- dbGetQuery(db, "SELECT name, avg_lat, avg_lon, duration, start_station_id, user_type
+                            FROM trips JOIN station_months ON trips.start_station_id = station_months.station_id")
+
+#changing lat/lon for spatial data later
+colnames(data_citibike)[colnames(data_citibike) =='avg_lat'] <- 'lat'
+colnames(data_citibike)[colnames(data_citibike) =='avg_lon'] <- 'lon'
+
+#have to use r after joining in SQL because rmarkdown could not handle me using SQL on this big dataset
+citicount <- data_citibike %>%
+  group_by(name) %>%
+  count(user_type) %>%
+  #filtering out names without lat/lon
+  filter(name != "Washington Street (Don't Use)") %>%
+  filter(name != '333 Johnson TEST 1') %>%
+  filter(name != "JSQ Don't Use") %>% 
+  filter(name!= "LPI Facility") %>%
+  filter(name!= "NYCBS Depot - STY - Valet Scan")
+
+#filtering out ones where user_type = NA(because type is essential for later use)
+citicount <- citicount %>%
+  filter(user_type != 'NA') %>%
+  mutate(total = sum(n)) %>%
+  mutate(percent = n/total)
+
+#finding top 20 most popular starting station 
+citicount_most <- citicount %>%
+  filter(total >= 900000) %>%
+  distinct()
+
+#finding top 17 least popluar starting station 
+citicount_least <- citicount %>%
+  filter(total <= 200) %>% 
+  distinct() 
+
+duration <- data_citibike %>%
+  select(name, duration, user_type) %>%
+  filter(user_type != 'NA') %>%
+  #filterning names without lat, lon
+  filter(name != "Washington Street (Don't Use)") %>%
+  filter(name != '333 Johnson TEST 1') %>%
+  filter(name != "JSQ Don't Use") %>% 
+  filter(name!= "LPI Facility") %>%
+  filter(name!= "NYCBS Depot - STY - Valet Scan")
+
+duration <- duration %>%
+  group_by(name, user_type) %>%
+  mutate(duration_total = sum(duration)) 
+
+duration <- duration[!duplicated(duration$duration_total),]
+
+x <- merge(duration, citicount_most)
+y <- merge(duration, citicount_least)
+
+location <- data_citibike %>%
+  select(name, lat, lon)
+
+#putting everything in one dataframe (lat, lon, percentage of subscribers/customers, duration, fraction of duration for subsriber/customer) so easier to look at
+location_least <- merge(location, y) 
+location_least <- location_least[!duplicated(location_least$duration_total),]
+
+location_most  <- merge(location, x)
+location_most <- location_most[!duplicated(location_most$duration_total),]
+```
+\
+\
+Unlike someone living in the countryside or suburbs, someone living in a city has a plethora of options when it comes to transportation. And, while everyone living in, say, New York City has access to the bus system and subway, as well as the option of hailing a taxi or owning a car, a different form of transportation rapidly growing in popularity is not so universally available.
+\
+\
+	Citi Bike, a bike share system, launched in New York City in May of 2013 and quickly proved itself to be an indispensable addition to the city’s transportation network. In addition to being efficient as well as good for one’s health and the environment, a monthly membership for Citi Bike, which would entitle the subscriber to unlimited 45-minute rides, costs only $14.95. In comparison, a monthly metro and bus pass for unlimited rides costs $127.00, or $63.50 for those who qualify for reduced fare. As for owning a bike, nymag.com’s list of the best bikes for commuting doesn’t list a single bike that costs under $300 - never mind the cost of maintenance, storage, or parking.
+\
+\
+Citi Bike actually seems like an ideal mode of transportation for lower-income residents, particularly in warmer and drier months. The problem is, actual Citi Bike stations tend to cluster around more tourist-heavy - and richer - boroughs, such as Manhattan and Brooklyn. This is likely not because Citi Bike wishes to spite lower-income neighborhoods but because a significant portion of its revenue comes from tourists. Be that as it may, the Bronx, a poorer borough and precisely the place where a cheap and reliable alternative mode of transportation would be helpful, has few if any Citi Bike stations. (Shown below are the top 20 most popular starting stations, represented in black, and the top 20 least popular starting stations, represented in green)
+\
+\
+```{r leaflet, fig.align="center", message=FALSE, warning=FALSE}
+#spatial data to show most popular and least popular starting CitiBike stations 
+#reference: https://rpubs.com/jhofman/nycmaps
+m <- leaflet() %>%
+  addTiles() %>%
+  addCircles(data = location_least, color = 'green') %>%
+  #for some reason. when knitting, these dots don't come out so i'm just gonna hard code them 
+  addCircles(data = location_most, color = "black") %>%
+  setView(-73.95, 40.75, zoom = 11)
+
+#area of part of the bronx
+m %>%
+  addCircles(lng = -73.865433, lat = 40.837048, radius = 1000, label = "The Bronx", labelOptions(noHide = T, textOnly = TRUE)) %>%
+  #area of part of Manhattan
+  addCircles(lng = -73.989829374, lat = 40.723663772, radius = 1000, label = "Manhattan", labelOptions(noHide = T, textOnly = TRUE)) %>%
+  #hard code of the most popular starting stations
+  addCircles(lng = -74.00278, lat = 40.76088, color = 'black') %>%
+  addCircles(lng = -73.99468, lat = 40.75059, color = 'black') %>%
+  addCircles(lng = -73.99393, lat = 40.75155, color = 'black') %>%
+  addCircles(lng = -73.99074, lat = 40.73455, color = 'black') %>%
+  addCircles(lng = -73.98955, lat = 40.74034, color = 'black') %>%
+  addCircles(lng = -74.00215, lat = 40.73039, color = 'black') %>%
+  addCircles(lng = -73.97634, lat = 40.76591, color = 'black') %>%
+  addCircles(lng = -74.00711, lat = 40.73292, color = 'black') %>%
+  addCircles(lng = -73.99725, lat = 40.72210, color = 'black') %>%
+  addCircles(lng = -73.99009, lat = 40.73705, color = 'black') %>%
+  addCircles(lng = -73.97371, lat = 40.76440, color = 'black') %>%
+  addCircles(lng = -74.00264, lat = 40.73902, color = 'black') %>%
+  addCircles(lng = -73.99103, lat = 40.73021, color = 'black') %>%
+  addCircles(lng = -73.97771, lat = 40.75187, color = 'black') %>%
+  addCircles(lng = -73.99201, lat = 40.73493, color = 'black') %>%
+  addCircles(lng = -74.00776, lat = 40.74674, color = 'black') %>%
+  addCircles(lng = -73.199416, lat = 40.74174, color = 'black') %>%
+  addCircles(lng = -73.199138, lat = 40.75467, color = 'black') %>%
+  addCircles(lng = -73.99003, lat = 40.75641, color = 'black') %>%
+  addCircles(lng = -74.01322, lat = 40.71755, color = 'black') %>%
+  addProviderTiles("CartoDB.Positron")
+
+```
+\
+\
+Customers, who may as well be from areas like the Bronx, often have to pay more than subscribers (who are relatively populated in richer areas) often have to pay more than subscribers which isn’t welcoming to low-income residents. According to the graph below, 31% of riders of the top 10 least popular Citibike stations are customers. That is more than twice as much as the ones in the top 20. This suggests that riders of Citibike aren’t commonly tourists but rather locals. With the lack of nearby stations for those who live in areas like the Bronx, customers would have to pay $3 for a 30 minute ride or $12 for a day pass. This is more expensive than the subscriber pass that costs only $14.95 a month. 
+\
+\
+```{r message=FALSE, warning=FALSE, fig.align='center',out.extra='angle=90', echo=FALSE}
+#showcasing percentage of subscribers/customers 
+bar_graphs <- ggarrange(x, y)
+
+annotate_figure(bar_graphs, top = text_grob("Top 20 Most/Least Popular Citibike starting stations"))
+
+#not all citibike stations had subscribers/customers thus why there is average of 38 riders for customers and 36 for subscribers for least popular 
+```
+
+```{r message=FALSE, warning=FALSE}
+
+avg_least_percent <- location_least %>%
+  select(user_type, percent) %>%
+  group_by(user_type) %>%
+  mutate(percent_avg = mean(percent)) 
+avg_least_percent <- avg_least_percent[!duplicated(avg_least_percent$percent_avg),]
+
+avg_most_percent <- location_most %>%
+  select(user_type, percent) %>%
+  group_by(user_type) %>%
+  mutate(percent_avg = mean(percent))
+avg_most_percent <- avg_most_percent[!duplicated(avg_most_percent$percent_avg),]
+
+avg_least_riders <- location_least %>%
+  select(user_type, n) %>%
+  group_by(user_type) %>%
+  mutate(riders_avg = mean(n)) 
+avg_least_riders <- avg_least_riders[!duplicated(avg_least_riders$riders_avg),]
+
+avg_most_riders <- location_most %>%
+  select(user_type, n) %>%
+  group_by(user_type) %>%
+  mutate(riders_avg = mean(n)) 
+avg_most_riders <- avg_most_riders[!duplicated(avg_most_riders$riders_avg),]
+```
+
+
+```{r message=FALSE, warning=FALSE}
+x <- ggplot(data = avg_least_percent, aes(x = user_type, y = percent_avg, fill = user_type)) +
+  geom_bar(stat = 'identity') + theme_bw() + 
+  scale_y_continuous(labels = scales::percent) + 
+  xlab("Citibike's types of user (Customer or Subscriber)") +
+  ylab("Average percentage of types of user") + 
+  theme(legend.position= 'none', axis.title.x = element_blank()) + 
+  annotate(geom = "text", x = 1, y = .90, label = 'Least Popular', color = 'black', size = 5 ) + 
+  annotate(geom = "text", x = 1, y = .25, label = '31%', color = 'white', size = 5 ) + 
+  annotate(geom = "text", x = 2, y = .80, label = '88%', color = 'white', size = 5 ) + 
+  annotate(geom = "text", x = 2, y = .90, label = 'Avg. # of riders: 36', color = 'black', size = 3 ) + 
+  annotate(geom = "text", x = 1, y = .35, label = 'Avg. # of riders: 38', color = 'black', size = 3) + 
+  scale_fill_brewer(palette="Dark2")
+  
+ y <- ggplot(data = avg_most_percent, aes(x = user_type, y = percent_avg, fill = user_type)) +
+  geom_bar(stat = 'identity') + 
+   theme_bw() + 
+   scale_y_continuous(labels = scales::percent) +
+   xlab("Citibike's types of user (Customer or Subscriber)") + theme(legend.position= 'none', axis.title.y = element_blank(), axis.title.x = element_blank()) + 
+   annotate(geom = "text", x = 1, y = .90, label = 'Most Popular', color = 'black', size = 5 ) + 
+   annotate(geom = "text", x = 1, y = .10, label = '13%', color = 'white', size = 5 ) + 
+   annotate(geom = "text", x = 2, y = .80, label = '87%', color = 'white', size = 5) + 
+   annotate(geom = "text", x = 1, y = .16, label = 'Avg. # of riders: 134,118', color = 'black', size = 3) + 
+   annotate(geom = "text", x = 2, y = .92, label = 'Avg. # of riders: 966,935', color = 'black', size = 3) + 
+   scale_fill_brewer(palette="Dark2")
+```
+\
+\
+On average, those who live in areas that are farther away from the touristy areas often spend 20 minutes (seen below) riding with Citibike. On an everyday use, this would accumulate to $1,095 a year if locals were to pay $3 everyday for a 30 minute ride. That is insanely more expensive than the subscription pass of $14.95. As one woman, who lives in the Bronx, puts it, “I thought Citibike was very expensive. I didn’t have any education to what it was.”
+\
+\
+
+
+```{r message=FALSE, warning=FALSE}
+#showcasing duration within least/popular 
+
+avg_duration_least <- location_least %>%
+  select(user_type, duration) %>%
+  group_by(user_type) %>%
+  mutate(duration_avg = mean(duration)/60) 
+avg_duration_least <- avg_duration_least[!duplicated(avg_duration_least$duration_avg),]
+
+avg_duration_most <- location_most %>%
+  select(user_type, duration) %>%
+  group_by(user_type) %>%
+  mutate(duration_avg = mean(duration)/60) 
+avg_duration_most <- avg_duration_most[!duplicated(avg_duration_most$duration_avg),]
+
+```
+
+```{r message=FALSE, warning=FALSE, fig.align='center',out.extra='angle=90', echo=FALSE}
+#bar graphs for duration 
+Most <- c(29,16)
+Least <- c(20,42)
+
+j <-cbind(Most,Least)
+
+barplot(j, beside = TRUE, xlab = 'Average Citibike duration (in minutes)', col=c("blue","red"), ylim=range(pretty(c(0,j))))
+
+legend("topleft", legend = c("Customer", "Subscriber"), fill = c('blue', 'red'))
+
+text(1.5, 32, "29")
+text(2.5, 18, "16")
+text(4.5, 22, "20")
+text(5.5, 44, "42")
+```
+\
+\
+This isn’t to say that the Bronx has no bike sharing options, however. Starting in August of 2018, Citi Bike made dockless Citi Bike bicycles available in the Fordham area of the Bronx. The difference between ‘dockless’ bikes and regular bikes is that ‘dockless’ bikes have no set parking station - once users have finished their ride, they simply park them in an agreed-upon area - like  a bike rack, and lock the rear wheel. The bike’s location is then displayed on an app, and the next person to come along unlocks it using the app. 
+While there are some small advantages to using a dockless system, overall the cons far outweigh the pros. One of the benefits of a dockless system most commonly cited is that it keeps stations from running out of bikes, or alternatively, running out of space to put the bikes - although solving that issue by getting rid of stations altogether seems pretty heavy-handed. Furthermore, while bikes are displayed on a map on the Citi Bike app, losing stations makes it a much less reliable form of transportation, particularly for those who wish to use it to get to work or efficiently run errands as opposed to just wanting to get some fresh air and exercise
+\
+\
+Intentionally or otherwise, Citi Bike and New York City have been denying the residents of traditionally lower-income areas a safe and affordable transportation option. While an alternative to Citi Bike stations in the form of dockless bikes has been introduced, the fact of the matter is that it is woefully inadequate support for the transportation needs of the Bronx’s population. If Citi Bike wants to maintain its hold on New York City, then it needs to offer its affordable and sustainable bike-sharing model to a wider selection of boroughs - not just the richer ones.
+
+[References: https://www.citibikenyc.com/events/2018/08/15/citi-bike-is-coming-to-the-bronx-and-were-having-a-party
+https://nyc.streetsblog.org/2018/08/16/a-hit-and-miss-debut-for-dockless-citi-bikes-in-the-bronx/
+https://nyc.streetsblog.org/2018/08/16/a-hit-and-miss-debut-for-dockless-citi-bikes-in-the-bronx/
+https://www.nytimes.com/2016/12/05/nyregion/citi-bike-may-need-public-funding-to-reach-more-new-yorkers.html]
